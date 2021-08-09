@@ -54,6 +54,129 @@
 #define WPTYPE_PWRON 2
 #define WPTYPE_PERM 3
 
+typedef int (*VendorHealthParse)(__u8 *health);
+
+struct VendorHealth {
+	//card id?
+	__u32 arg;
+	VendorHealthParse parse;
+};
+
+int parse_micron(__u8 *health) {
+
+	if ((health[0] != 0x4D) || (health[1] != 0x45) ||
+	    (health[2] != 0x42) || (health[3] != 0x55))
+		return 0;
+
+	printf("Fixed Filed Header: %02Xh %02Xh %02Xh %02Xh\n",
+ 			health[0], health[1], health[2], health[3]);
+	printf("Percentage Step Size: %d\n", health[7]);
+	printf("TLC/QLC Percentage Utilization: %d%%\n", health[8]);
+	printf("SLC Percentage Utilization: %d%%\n", health[9]);
+
+	return 1;
+}
+
+int parse_sandisk(__u8 *health) {
+
+	if ((health[0] != 0x44) || (health[1] != 0x53))
+		return 0;
+
+	printf("SD Indentifier: %02X%02Xh\n", health[0], health[1]);
+	printf("Health Status %%: %d\n", health[8]);
+
+	return 1;
+}
+
+static struct VendorHealth healths[] = {
+	{
+		/* Micron */
+		.arg = 0x110005FB,
+		.parse = parse_micron,
+	},
+	{
+		/* SanDisk */
+		.arg = 0x00000001,
+		.parse = parse_sandisk,
+	},
+};
+
+int read_health(int fd, __u32 arg, __u8 *health)
+{
+	int ret = 0;
+	struct mmc_ioc_cmd idata;
+	memset(&idata, 0, sizeof(idata));
+	memset(health, 0, sizeof(__u8) * 512);
+	idata.write_flag = 0;
+	idata.opcode = MMC_GEN_CMD;
+	idata.arg = arg;
+	idata.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+	idata.blksz = 512;
+	idata.blocks = 1;
+	mmc_ioc_cmd_set_data(idata, health);
+
+	ret = ioctl(fd, MMC_IOC_CMD, &idata);
+	if (ret)
+		perror("ioctl");
+
+	return ret;
+}
+
+void dump_data_block(__u8 *lba_block_data)
+{
+	int count=0;
+
+	printf("CMD56 data block dumping:");
+	while( count < 512) {
+		if (count % 16 == 0)
+			printf("\n%03d: ", count);
+		printf("%02x ", lba_block_data[count]);
+		count++;
+	}
+	printf("\n");
+
+	return;
+}
+
+int do_read_health(int nargs, char **argv)
+{
+        __u8 health[512];
+        int fd, ret, dump = 0;
+        char *device;
+
+	(void)healths[0];
+
+        if ((nargs != 2)&&(nargs != 3)) {
+                fprintf(stderr, "Usage: mmc readhealth <-d> </path/to/mmcblkX>\n");
+                exit(1);
+        }
+
+	if (!strcmp("-d", argv[1])) {
+		dump = 1;
+	}
+
+        device = argv[nargs-1];
+
+        fd = open(device, O_RDWR);
+        if (fd < 0) {
+                perror("open");
+                exit(1);
+        }
+
+        ret = read_health(fd, 0x00000001, health);
+        if (ret) {
+                fprintf(stderr, "Could not read health from %s\n", device);
+                exit(1);
+        }
+
+	if (dump)
+		dump_data_block(health);
+
+	parse_sandisk(health);
+
+        return ret;
+}
+
 
 int read_extcsd(int fd, __u8 *ext_csd)
 {
